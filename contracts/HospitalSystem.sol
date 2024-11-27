@@ -6,7 +6,6 @@ contract HospitalSystem {
     struct Hospital {
         uint256 hospitalId;
         string name;
-        string password; // In real implementation, use proper authentication
         address hospitalAddress;
         bool isRegistered;
         uint256 timestamp;
@@ -15,7 +14,6 @@ contract HospitalSystem {
     struct Patient {
         uint256 patientId;
         string name;
-        string password; // In real implementation, use proper authentication
         address patientAddress;
         string medicalHistory;
         bool isRegistered;
@@ -38,6 +36,8 @@ contract HospitalSystem {
     mapping(address => uint256) public addressToHospitalId;
     mapping(address => uint256) public addressToPatientId;
     mapping(address => uint256) public addressToPharmacyId;
+    mapping(uint256 => mapping(address => bool))
+        public patientDataAccessPermissions;
 
     uint256 private hospitalCounter;
     uint256 private patientCounter;
@@ -70,6 +70,16 @@ contract HospitalSystem {
         address indexed accessor,
         string accessType
     );
+    event AccessRequested(
+        uint256 indexed patientId,
+        address indexed requester,
+        string requesterType
+    );
+    event PermissionUpdated(
+        uint256 indexed patientId,
+        address indexed accessor,
+        bool permission
+    );
 
     // Modifiers
     modifier onlyRegisteredHospital() {
@@ -89,10 +99,7 @@ contract HospitalSystem {
     }
 
     // Hospital Registration
-    function registerHospital(
-        string memory _name,
-        string memory _password
-    ) public returns (uint256) {
+    function registerHospital(string memory _name) public returns (uint256) {
         require(
             addressToHospitalId[msg.sender] == 0,
             "Hospital already registered"
@@ -104,7 +111,6 @@ contract HospitalSystem {
         hospitals[hospitalId] = Hospital({
             hospitalId: hospitalId,
             name: _name,
-            password: _password,
             hospitalAddress: msg.sender,
             isRegistered: true,
             timestamp: block.timestamp
@@ -119,7 +125,6 @@ contract HospitalSystem {
     // Patient Registration
     function registerPatient(
         string memory _name,
-        string memory _password,
         string memory _medicalHistory
     ) public returns (uint256) {
         require(
@@ -133,7 +138,6 @@ contract HospitalSystem {
         patients[patientId] = Patient({
             patientId: patientId,
             name: _name,
-            password: _password,
             patientAddress: msg.sender,
             medicalHistory: _medicalHistory,
             isRegistered: true,
@@ -175,12 +179,53 @@ contract HospitalSystem {
         return pharmacyId;
     }
 
+    // Request access to patient data
+    function requestDataAccess(uint256 _patientId) public {
+        require(patients[_patientId].isRegistered, "Patient does not exist");
+        require(
+            hospitals[addressToHospitalId[msg.sender]].isRegistered ||
+                pharmacies[addressToPharmacyId[msg.sender]].isRegistered,
+            "Only hospitals or pharmacies can request access"
+        );
+
+        string memory requesterType = hospitals[addressToHospitalId[msg.sender]]
+            .isRegistered
+            ? "Hospital"
+            : "Pharmacy";
+
+        emit AccessRequested(_patientId, msg.sender, requesterType);
+    }
+
+    // Update access permission
+    function updateAccessPermission(
+        uint256 _patientId,
+        address _accessor,
+        bool _permission
+    ) public {
+        require(
+            msg.sender == patients[_patientId].patientAddress,
+            "Only patient can grant/revoke access"
+        );
+        require(
+            hospitals[addressToHospitalId[_accessor]].isRegistered ||
+                pharmacies[addressToPharmacyId[_accessor]].isRegistered,
+            "Invalid accessor address"
+        );
+
+        patientDataAccessPermissions[_patientId][_accessor] = _permission;
+        emit PermissionUpdated(_patientId, _accessor, _permission);
+    }
+
     // Create Medical Record
     function createMedicalRecord(
         uint256 _patientId,
         string memory _proofHash
     ) public onlyRegisteredHospital {
         require(patients[_patientId].isRegistered, "Patient does not exist");
+        require(
+            patientDataAccessPermissions[_patientId][msg.sender],
+            "Access not granted by patient"
+        );
 
         uint256 hospitalId = addressToHospitalId[msg.sender];
         emit MedicalRecordCreated(_patientId, hospitalId, _proofHash);
@@ -190,11 +235,23 @@ contract HospitalSystem {
     // Access Patient Data
     function accessPatientData(uint256 _patientId) public {
         require(patients[_patientId].isRegistered, "Patient does not exist");
+
+        // If accessor is the patient themselves, allow access
+        if (msg.sender == patients[_patientId].patientAddress) {
+            emit DataAccessed(_patientId, msg.sender, "Data Access");
+            return;
+        }
+
+        // For hospitals and pharmacies, check if they have permission
         require(
-            msg.sender == patients[_patientId].patientAddress ||
-                hospitals[addressToHospitalId[msg.sender]].isRegistered ||
+            hospitals[addressToHospitalId[msg.sender]].isRegistered ||
                 pharmacies[addressToPharmacyId[msg.sender]].isRegistered,
             "Unauthorized access"
+        );
+
+        require(
+            patientDataAccessPermissions[_patientId][msg.sender],
+            "Access not granted by patient"
         );
 
         emit DataAccessed(_patientId, msg.sender, "Data Access");
